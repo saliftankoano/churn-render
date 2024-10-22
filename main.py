@@ -56,7 +56,7 @@ def make_prediction(input_df, input_dict):
   with col1:
     fig = create_gauge_chart(avg_probability)
     st.plotly_chart(fig)
-    st.write(f"The customer has a: {avg_probability:.2f} probablity of churning.")
+    st.write(f"The customer has a: {round(avg_probability*100)} probablity of churning.")
   with col2:
     fig_probs= create_model_probability_chart(probabilities)
     assert isinstance(fig_probs, go.Figure), "fig_probs is not a Plotly Figure"
