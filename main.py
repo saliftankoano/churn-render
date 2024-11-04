@@ -337,26 +337,26 @@ if option == "Churn Prediction":
     # Make RowNumber and CustomerId columns categorical to be able to use the model
     RowNumber = df['RowNumber'].astype('category')
     customerId = df['CustomerId'].astype('category')
-
-    input_df, input_dict = prepare_input(credit_score, age, tenure,
-    balance, num_products, has_credit_card, is_active_member,
-    estimated_salary, location, gender)
-
-    avg_probability = make_prediction(input_df, input_dict)
-    explanation = explain_prediction(avg_probability, input_dict,
-    selected_customer_surname)
-    email = generate_email(avg_probability, input_dict,
-    explanation,selected_customer['Surname'])
-
-    # Formating explanation
-    st.markdown("------")
-    st.subheader("Explanation of the prediction: ")
-    st.markdown(explanation)
-
-    # Generate email
-    st.markdown("------")
-    st.subheader("Personalize customer email: ")
-    st.markdown(email)
+    if st.button("Predict churn"):
+      input_df, input_dict = prepare_input(credit_score, age, tenure,
+      balance, num_products, has_credit_card, is_active_member,
+      estimated_salary, location, gender)
+  
+      avg_probability = make_prediction(input_df, input_dict)
+      explanation = explain_prediction(avg_probability, input_dict,
+      selected_customer_surname)
+      email = generate_email(avg_probability, input_dict,
+      explanation,selected_customer['Surname'])
+  
+      # Formating explanation
+      st.markdown("------")
+      st.subheader("Explanation of the prediction: ")
+      st.markdown(explanation)
+  
+      # Generate email
+      st.markdown("------")
+      st.subheader("Personalize customer email: ")
+      st.markdown(email)
   else:
     selected_customer_id = None
 elif option == "Fraud Detection":
