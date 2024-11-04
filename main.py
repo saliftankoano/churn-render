@@ -255,13 +255,16 @@ def prepare_fraud_input(selected_customer):
 # Load the churn data
 df = pd.read_csv("churn.csv")
 fraud_data = pd.read_csv("fraud_data.csv")
-# Function to calculate age from dob and assign an age group
+
+# Set the name of tab
+st.set_page_config(page_title="Genos churn & fraud")
 
 option = st.sidebar.selectbox(
   "Select a service",
   ("Churn Prediction", "Fraud Detection")
 )
 if option == "Churn Prediction":
+
   st.title("Genos Bank customer churn prediction")
   # Customer id and surname
   customers = [f"{row['CustomerId']} - {row['Surname']}" for _,row in df.iterrows()]
