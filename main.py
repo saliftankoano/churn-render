@@ -1,5 +1,6 @@
 import os
 import pickle
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -7,7 +8,11 @@ import plotly.graph_objects as go
 import streamlit as st
 from openai import OpenAI
 
-from utils import create_gauge_chart, create_model_probability_chart
+from utils import (
+  create_fraud_gauge_chart,
+  create_gauge_chart,
+  create_model_probability_chart,
+)
 
 client = OpenAI(
   base_url="https://api.groq.com/openai/v1",
@@ -22,7 +27,7 @@ gb_model = load_model("gb_model-SMOTE.pkl")
 xgboost_model = load_model("xgboost_model-SMOTE.pkl")
 random_forest_model = load_model("rf_model-SMOTE.pkl")
 voting_classifier_model = load_model("voting_clf_model.pkl")
-
+# Function to prepare the churn prediciton data
 def prepare_input(CreditScore, Age, Tenure, Balance, NumOfProducts, HasCrCard,
   IsActiveMember, EstimatedSalary, location, gender):
   input_dict = {
@@ -42,7 +47,7 @@ def prepare_input(CreditScore, Age, Tenure, Balance, NumOfProducts, HasCrCard,
   }
   input_df = pd.DataFrame([input_dict])
   return input_df, input_dict
-
+# Function to predict churn probability
 def make_prediction(input_df, input_dict):
   probabilities = {
     'Gradient Boosting': gb_model.predict_proba(input_df)[0][1],
@@ -56,14 +61,14 @@ def make_prediction(input_df, input_dict):
   with col1:
     fig = create_gauge_chart(avg_probability)
     st.plotly_chart(fig)
-    st.write(f"The customer has a: {round(avg_probability*100)} probablity of churning.")
+    st.write(f"The customer has a: {avg_probability:.2f} probablity of churning.")
   with col2:
     fig_probs= create_model_probability_chart(probabilities)
     assert isinstance(fig_probs, go.Figure), "fig_probs is not a Plotly Figure"
     st.plotly_chart(fig_probs, use_container_width=True)
   
   return avg_probability
-
+# Function to predict fraud probability
 def explain_prediction(probability, input_dict, surname):
   prompt = f"""
   You are an expert data scientist at a bank, specializing in explaining
@@ -118,7 +123,7 @@ def explain_prediction(probability, input_dict, surname):
   )
   
   return raw_response.choices[0].message.content
-
+# Function to predict churn probability
 def generate_email(probability, input_dict, explanation, surname):
   prompt = f"""
   You are Jason Duval, a Senior Account Executive at Genos
@@ -167,106 +172,244 @@ def generate_email(probability, input_dict, explanation, surname):
   print(" \n\nEmail prompt: ", prompt)
   
   return raw_response.choices[0].message.content
-st.title("Genos Bank customer churn prediction")
+
+# Load fraud detection model
+fraud_detection_model = load_model("fraud_model.pkl")
+# Prepare input for fraud detection model
+def prepare_fraud_input(selected_customer):
+  customer_data = pd.DataFrame([selected_customer])
+  customer_data['state_code'] = customer_data['state'].astype('category').cat.codes
+  # Calculate age based on date of birth (dob)
+  dob = pd.to_datetime(selected_customer['dob'])
+  age = int((pd.Timestamp.now() - dob).days / 365.25)
+
+  # Assign to an age group based on age
+  if 18 <= age <= 25:
+      age_group = "18-25"
+  elif 26 <= age <= 35:
+      age_group = "26-35"
+  elif 36 <= age <= 45:
+      age_group = "36-45"
+  elif 46 <= age <= 55:
+      age_group = "46-55"
+  elif 56 <= age <= 65:
+      age_group = "56-65"
+  else:
+      age_group = "65+"
+
+  # Map age_group to one-hot encoded columns
+  age_groups = {
+      "18-25": [1, 0, 0, 0, 0, 0],
+      "26-35": [0, 1, 0, 0, 0, 0],
+      "36-45": [0, 0, 1, 0, 0, 0],
+      "46-55": [0, 0, 0, 1, 0, 0],
+      "56-65": [0, 0, 0, 0, 1, 0],
+      "65+": [0, 0, 0, 0, 0, 1]
+  }
+  age_group_encoded = age_groups.get(age_group, [0] * 6)
+
+  # Map gender to binary columns
+  gender_F = 1 if selected_customer['gender'] == "Female" else 0
+  gender_M = 1 if selected_customer['gender'] == "Male" else 0
+
+  # One-hot encode transaction category (example for simplicity)
+  categories = [
+      'category_food_dining', 'category_gas_transport', 'category_grocery_net',
+      'category_grocery_pos', 'category_health_fitness', 'category_home',
+      'category_kids_pets', 'category_misc_net', 'category_misc_pos',
+      'category_personal_care', 'category_shopping_net', 'category_shopping_pos',
+      'category_travel'
+  ]
+  category = selected_customer['category']
+  category_encoded = [1 if category == cat else 0 for cat in categories]
+
+  # Calculate transaction distance
+  merch_lat, merch_long = selected_customer['merch_lat'], selected_customer['merch_long']
+  lat, long = selected_customer['lat'], selected_customer['long']
+  distance = np.sqrt((merch_lat - lat) ** 2 + (merch_long - long) ** 2)
+
+  # Build final input DataFrame for the model
+  input_data = {
+      'amt': [selected_customer['amt']],
+      'zip': [selected_customer['zip']],
+      'city_pop': [selected_customer['city_pop']],
+      'age': [age],
+      'state_code': customer_data['state_code'],
+      'hour': [pd.to_datetime(selected_customer['trans_date_trans_time']).hour],
+      'day_of_week': [pd.to_datetime(selected_customer['trans_date_trans_time'])
+      .weekday() + 1],
+      'is_weekend': [1 if pd.to_datetime(selected_customer['trans_date_trans_time'])
+      .weekday() >= 5 else 0],
+      'is_business_hours': [1 if 9 <= pd.to_datetime(
+      selected_customer['trans_date_trans_time']).hour <= 17 else 0],
+      **{f'category_{cat}': cat_enc for cat, cat_enc in 
+      zip(categories, category_encoded)},
+      'gender_F': [gender_F],
+      'gender_M': [gender_M],
+      **{f'age_group_{age_group_key}': [age_group_val] for age_group_key, age_group_val 
+      in zip(age_groups.keys(), age_group_encoded)},
+      'distance': [distance]
+  }
+
+  return pd.DataFrame(input_data)
+# Load the churn data
 df = pd.read_csv("churn.csv")
+fraud_data = pd.read_csv("fraud_data.csv")
+# Function to calculate age from dob and assign an age group
 
-# Customer id and surname
-customers = [f"{row['CustomerId']} - {row['Surname']}" for _,row in df.iterrows()]
+option = st.sidebar.selectbox(
+  "Select a service",
+  ("Churn Prediction", "Fraud Detection")
+)
+if option == "Churn Prediction":
+  st.title("Genos Bank customer churn prediction")
+  # Customer id and surname
+  customers = [f"{row['CustomerId']} - {row['Surname']}" for _,row in df.iterrows()]
+  selected_customer_option = st.selectbox("Select a customer", customers)
+  if selected_customer_option:
+    selected_customer_id = int(selected_customer_option.split(" - ")[0])
+    print("Selected customer ID: ", selected_customer_id)
+    selected_customer_surname = selected_customer_option.split(" - ")[1]
+    print("Selected customer surname: ", selected_customer_surname)
+    # Identify selected customer
+    selected_customer = df.loc[df['CustomerId'] 
+    ==  selected_customer_id].iloc[0]
+    print("Selected customer: ", selected_customer)
+    # Setup 2 columns layout 
+    col1,col2 = st.columns(2)
+    # Assign UI elements to columns
 
-selected_customer_option = st.selectbox("Select a customer", customers)
+    with col1:
+      credit_score = st.number_input(
+        "Credit Score",
+        min_value= 300,
+        max_value= 850,
+        value = int(selected_customer['CreditScore'])
+      )
+      location = st.selectbox(
+        "Locaton", ["Spain", "France", "Germany"],
+        index= ["Spain", "France", "Germany"].index(selected_customer['Geography'])
+      )
+      gender = st.radio(
+        "Gender",
+        ["male", "female"], 
+        index= 0 if selected_customer['Gender'] == "Male" else 1
+      )
+      age = st.number_input(
+        "Age",
+        min_value= 18,
+        max_value= 100,
+        value = int(selected_customer['Age'])
+      )
+      tenure = st.number_input(
+        "Tenure (years)",
+        min_value= 0,
+        max_value= 50,
+        value = int(selected_customer['Tenure'])
+      )
 
-if selected_customer_option:
-  selected_customer_id = int(selected_customer_option.split(" - ")[0])
-  print("Selected customer ID: ", selected_customer_id)
-  selected_customer_surname = selected_customer_option.split(" - ")[1]
-  print("Selected customer surname: ", selected_customer_surname)
-  # Identify selected customer
-  selected_customer = df.loc[df['CustomerId'] 
-  ==  selected_customer_id].iloc[0]
-  print("Selected customer: ", selected_customer)
-  # Setup 2 columns layout 
-  col1,col2 = st.columns(2)
-  # Assign UI elements to columns
+    with col2:
+      balance = st.number_input(
+        "Balance",
+        min_value= 0.0,
+        value= float(selected_customer['Balance'])
+      )
+      num_products = st.number_input(
+        "Number of products",
+        min_value= 0,
+        value= int(selected_customer['NumOfProducts'])
+      )
+      has_credit_card = st.checkbox(
+        "Has credit card",
+        value= bool(selected_customer['HasCrCard'])
+      )
+      is_active_member = st.checkbox(
+        "Is active member",
+        value= bool(selected_customer['IsActiveMember'])
+      )
+      estimated_salary = st.number_input(
+        "Estimated salary",
+        min_value= 0.0,
+        value= float(selected_customer['EstimatedSalary'])
+      )
 
-  with col1:
-    credit_score = st.number_input(
-      "Credit Score",
-      min_value= 300,
-      max_value= 850,
-      value = int(selected_customer['CreditScore'])
-    )
-    location = st.selectbox(
-      "Locaton", ["Spain", "France", "Germany"],
-      index= ["Spain", "France", "Germany"].index(selected_customer['Geography'])
-    )
-    gender = st.radio(
-      "Gender",
-      ["male", "female"], 
-      index= 0 if selected_customer['Gender'] == "Male" else 1
-    )
-    age = st.number_input(
-      "Age",
-      min_value= 18,
-      max_value= 100,
-      value = int(selected_customer['Age'])
-    )
-    tenure = st.number_input(
-      "Tenure (years)",
-      min_value= 0,
-      max_value= 50,
-      value = int(selected_customer['Tenure'])
-    )
+    age_ratio_tenure = df['CustomerId'][df['Age']] / df['CustomerId'][df['Tenure']]
+    # Make RowNumber and CustomerId columns categorical to be able to use the model
+    RowNumber = df['RowNumber'].astype('category')
+    customerId = df['CustomerId'].astype('category')
 
-  with col2:
-    balance = st.number_input(
-      "Balance",
-      min_value= 0.0,
-      value= float(selected_customer['Balance'])
-    )
-    num_products = st.number_input(
-      "Number of products",
-      min_value= 0,
-      value= int(selected_customer['NumOfProducts'])
-    )
-    has_credit_card = st.checkbox(
-      "Has credit card",
-      value= bool(selected_customer['HasCrCard'])
-    )
-    is_active_member = st.checkbox(
-      "Is active member",
-      value= bool(selected_customer['IsActiveMember'])
-    )
-    estimated_salary = st.number_input(
-      "Estimated salary",
-      min_value= 0.0,
-      value= float(selected_customer['EstimatedSalary'])
-    )
-  
-  age_ratio_tenure = df['CustomerId'][df['Age']] / df['CustomerId'][df['Tenure']]
-  # Make RowNumber and CustomerId columns categorical to be able to use the model
-  RowNumber = df['RowNumber'].astype('category')
-  customerId = df['CustomerId'].astype('category')
-  
-  input_df, input_dict = prepare_input(credit_score, age, tenure,
-  balance, num_products, has_credit_card, is_active_member,
-  estimated_salary, location, gender)
-  
-  avg_probability = make_prediction(input_df, input_dict)
-  explanation = explain_prediction(avg_probability, input_dict,
-  selected_customer_surname)
-  email = generate_email(avg_probability, input_dict,
-  explanation,selected_customer['Surname'])
-  
-  # Formating explanation
-  st.markdown("------")
-  st.subheader("Explanation of the prediction: ")
-  st.markdown(explanation)
-  
-  # Generate email
-  st.markdown("------")
-  st.subheader("Personalize customer email: ")
-  st.markdown(email)
-else:
-  selected_customer_id = None
+    input_df, input_dict = prepare_input(credit_score, age, tenure,
+    balance, num_products, has_credit_card, is_active_member,
+    estimated_salary, location, gender)
 
+    avg_probability = make_prediction(input_df, input_dict)
+    explanation = explain_prediction(avg_probability, input_dict,
+    selected_customer_surname)
+    email = generate_email(avg_probability, input_dict,
+    explanation,selected_customer['Surname'])
 
+    # Formating explanation
+    st.markdown("------")
+    st.subheader("Explanation of the prediction: ")
+    st.markdown(explanation)
+
+    # Generate email
+    st.markdown("------")
+    st.subheader("Personalize customer email: ")
+    st.markdown(email)
+  else:
+    selected_customer_id = None
+elif option == "Fraud Detection":
+  st.title("Fraud Detection Analysis")
+  # Input fields for transaction information
+  customers = [f"{row['cc_num']} - {row['last']}" for _, row in fraud_data.iterrows()]
+  selected_customer_option = st.selectbox("Select a transaction", customers)
+  if selected_customer_option:
+      selected_customer_cc_num = int(selected_customer_option.split(" - ")[0])
+      # Identify selected transaction row
+      selected_customer = fraud_data.loc[fraud_data['cc_num'] == 
+      selected_customer_cc_num].iloc[0]
+
+      # Prepare input data for model
+      input_df = prepare_fraud_input(selected_customer)
+    
+      # Prefill transaction fields
+      col1, col2 = st.columns(2)
+      with col1:
+          amount = st.number_input("Transaction Amount", min_value=0.0,
+          value=float(selected_customer['amt']), step=0.01)
+          hour = st.number_input("Transaction Hour", min_value=0, max_value=23,
+          value=pd.to_datetime(selected_customer['trans_date_trans_time']).hour)
+          day_of_week = st.number_input("Day of the Week (1=Monday, 7=Sunday)",
+          min_value=1,max_value=7,
+          value=pd.to_datetime(selected_customer['trans_date_trans_time']).weekday()
+          + 1)
+          is_weekend = st.checkbox("Transaction on Weekend",
+          value=pd.to_datetime(selected_customer['trans_date_trans_time']).weekday()
+          >= 5)
+          is_business_hours = st.checkbox("During Business Hours (9 AM - 5 PM)", 
+          value=9 <=pd.to_datetime(selected_customer['trans_date_trans_time']).hour
+          <= 17)
+          distance_series = input_df['distance']
+          distance_value = int(distance_series.iloc[0])
+          distance = st.number_input("Transaction Distance (Miles)",
+          value=distance_value)
+
+      with col2:
+          state_code = st.text_input("State Code", value=selected_customer['state'])
+          job_code = st.text_input("Job Code", value=selected_customer['job'])
+          category = st.text_input("Transaction Category",
+          value=selected_customer['category'])
+          age_value_series = input_df['age']  # This is a Series
+          age_value = int(age_value_series.iloc[0])
+          gender = st.radio("Gender", ["Male", "Female"],
+          index=0 if selected_customer['gender'] == "Male" else 1)
+          age = st.number_input("Age", value=age_value)
+        
+
+      # Make prediction
+      if st.button("Predict Fraud Risk"):
+        fraud_probability = fraud_detection_model.predict_proba(input_df)[0][1]
+        # Display gauge chart
+        fig = create_fraud_gauge_chart(fraud_probability)
+        st.plotly_chart(fig, use_container_width=True)
