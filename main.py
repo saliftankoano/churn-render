@@ -1,10 +1,12 @@
 import os
 import pickle
 from datetime import datetime
+from math import atan2, cos, radians, sin, sqrt
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import pydeck as pdk
 import streamlit as st
 from openai import OpenAI
 
@@ -222,11 +224,23 @@ def prepare_fraud_input(selected_customer):
   ]
   category = selected_customer['category']
   category_encoded = [1 if category == cat else 0 for cat in categories]
-
+  
+  
+  # Function to calculate the Haversine distance
+  def haversine(lat1, lon1, lat2, lon2):
+      # Radius of Earth in miles
+      R = 3958.8 
+      lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+      dlat = lat2 - lat1
+      dlon = lon2 - lon1
+      a = sin(dlat / 2)**2 + cos(lat1) * cos(lat2) * sin(dlon / 2)**2
+      c = 2 * atan2(sqrt(a), sqrt(1 - a))
+      distance = R * c
+      return distance
   # Calculate transaction distance
   merch_lat, merch_long = selected_customer['merch_lat'], selected_customer['merch_long']
   lat, long = selected_customer['lat'], selected_customer['long']
-  distance = np.sqrt((merch_lat - lat) ** 2 + (merch_long - long) ** 2)
+  distance = haversine(lat, long, merch_lat, merch_long)
 
   # Build final input DataFrame for the model
   input_data = {
@@ -257,7 +271,7 @@ df = pd.read_csv("churn.csv")
 fraud_data = pd.read_csv("fraud_data.csv")
 
 # Set the name of tab
-st.set_page_config(page_title="Genos churn & fraud")
+st.set_page_config(page_title="Genos churn")
 
 option = st.sidebar.selectbox(
   "Select a service",
@@ -367,18 +381,81 @@ elif option == "Fraud Detection":
   # Input fields for transaction information
   customers = [f"{row['cc_num']} - {row['last']}" for _, row in fraud_data.iterrows()]
   selected_customer_option = st.selectbox("Select a transaction", customers)
+ 
   if selected_customer_option:
       selected_customer_cc_num = int(selected_customer_option.split(" - ")[0])
       # Identify selected transaction row
       selected_customer = fraud_data.loc[fraud_data['cc_num'] == 
       selected_customer_cc_num].iloc[0]
-
-      # Prepare input data for model
       input_df = prepare_fraud_input(selected_customer)
+
+      # Calculate distance between customer and merchant
+      map_data = pd.DataFrame({
+        'name': ['Customer', 'Merchant'],
+        'lat': [selected_customer['lat'], selected_customer['merch_lat']],
+        'lon': [selected_customer['long'], selected_customer['merch_long']]
+      })
+
+      # Create the line layer to connect the customer and merchant
+      line_data = pd.DataFrame({
+        'start_lat': [selected_customer['lat']],
+        'start_lon': [selected_customer['long']],
+        'end_lat': [selected_customer['merch_lat']],
+        'end_lon': [selected_customer['merch_long']]
+      })
+
+      # Pydeck Layer setup
+      layer_points = pdk.Layer(
+        'ScatterplotLayer',
+        data=map_data,
+        get_position='[lon, lat]',
+        get_fill_color='[200, 30, 0, 160]', # Red color
+        get_radius=200, # Radius of the points
+        pickable=True
+      )
+
+      layer_line = pdk.Layer(
+        "LineLayer",
+        data=line_data,
+        get_source_position='[start_lon, start_lat]',
+        get_target_position='[end_lon, end_lat]',
+        get_color='[0, 0, 255, 160]', # Blue color for the line
+        get_width=5
+      )
+
+      # Set up the initial view for the map
+      view_state = pdk.ViewState(
+        latitude=(selected_customer['lat'] + selected_customer['merch_lat']) / 2,
+        longitude=(selected_customer['long'] + selected_customer['merch_long']) / 2,
+        zoom=10,
+        pitch=50
+      )
+
+      # Render the map with the points and line layers
+      # Render the map with the points and line layers
+      tooltip_config = {
+          'html': '<b>{name}</b>',
+          'style': {
+              'color': 'white',
+              'backgroundColor': 'red'
+          }
+      }
+      st.pydeck_chart(
+          pdk.Deck(
+              layers=[layer_points, layer_line],
+              initial_view_state=view_state,
+              tooltip=tooltip_config,
+          )
+      )
+     
     
       # Prefill transaction fields
       col1, col2 = st.columns(2)
       with col1:
+          distance_series = input_df['distance']
+          distance_value = int(distance_series.iloc[0])
+          distance = st.number_input("Transaction Distance (Miles)",
+          value=distance_value)
           amount = st.number_input("Transaction Amount", min_value=0.0,
           value=float(selected_customer['amt']), step=0.01)
           hour = st.number_input("Transaction Hour", min_value=0, max_value=23,
@@ -393,10 +470,6 @@ elif option == "Fraud Detection":
           is_business_hours = st.checkbox("During Business Hours (9 AM - 5 PM)", 
           value=9 <=pd.to_datetime(selected_customer['trans_date_trans_time']).hour
           <= 17)
-          distance_series = input_df['distance']
-          distance_value = int(distance_series.iloc[0])
-          distance = st.number_input("Transaction Distance (Miles)",
-          value=distance_value)
 
       with col2:
           state_code = st.text_input("State Code", value=selected_customer['state'])
