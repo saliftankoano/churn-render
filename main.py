@@ -454,7 +454,7 @@ elif option == "Fraud Detection":
       with col1:
           distance_series = input_df['distance']
           distance_value = int(distance_series.iloc[0])
-          distance = st.number_input("Transaction Distance (Miles)",
+          distance = st.number_input("Distance (Miles)",
           value=distance_value)
           amount = st.number_input("Transaction Amount", min_value=0.0,
           value=float(selected_customer['amt']), step=0.01)
